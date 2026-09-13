@@ -675,6 +675,170 @@ class EvalExportTests(unittest.TestCase):
             self.assertEqual(details["model_availability"], "unknown")
             self.assertNotIn("hf_model_url", details)
 
+    def test_judge_metadata_and_toxicity_names_match_reviewer_guidance(self):
+        raw = fixture_results()
+        raw["results"] = {
+            "alpaca_eval": {
+                "length_controlled_winrate,none": 0.47,
+                "avg_word_count,none": 305.0,
+            },
+            "arena_hard_v01": {
+                "arena_hard_score,none": 0.32,
+                "avg_word_count,none": 394.0,
+            },
+            "arena_hard_v2": {
+                "arena_hard_score,none": 0.03,
+                "avg_word_count,none": 334.0,
+            },
+            "harmbench": {"score,none": 0.26},
+            "orbench": {"refusal,none": 0.81},
+            "polyglotoxicitypromptsllama_small": {"score,none": 0.08},
+            "polyglotoxicitypromptsllama_small_english": {
+                "score,none": 0.04
+            },
+            "realtoxicitypromptsllama_small": {"score,none": 0.005},
+        }
+        raw["configs"] = {
+            task_name: {
+                "task": task_name,
+                "dataset_path": dataset_path,
+                "test_split": "test",
+                "output_type": "generate_until",
+                "generation_kwargs": {"do_sample": False},
+            }
+            for task_name, dataset_path in {
+                "alpaca_eval": "tatsu-lab/alpaca_eval",
+                "arena_hard_v01": "lmarena-ai/arena-hard-auto",
+                "arena_hard_v2": "lmarena-ai/arena-hard-auto",
+                "harmbench": "swiss-ai/harmbench",
+                "orbench": "bench-llm/or-bench",
+                "polyglotoxicitypromptsllama_small": (
+                    "swiss-ai/polyglotoxicityprompts"
+                ),
+                "polyglotoxicitypromptsllama_small_english": (
+                    "swiss-ai/polyglotoxicityprompts"
+                ),
+                "realtoxicitypromptsllama_small": (
+                    "swiss-ai/realtoxicityprompts"
+                ),
+            }.items()
+        }
+        raw["higher_is_better"] = {
+            "alpaca_eval": {
+                "length_controlled_winrate": True,
+                "avg_word_count": False,
+            },
+            "arena_hard_v01": {
+                "arena_hard_score": True,
+                "avg_word_count": False,
+            },
+            "arena_hard_v2": {
+                "arena_hard_score": True,
+                "avg_word_count": False,
+            },
+            "harmbench": {"score": False},
+            "orbench": {"refusal": False},
+            "polyglotoxicitypromptsllama_small": {"score": False},
+            "polyglotoxicitypromptsllama_small_english": {"score": False},
+            "realtoxicitypromptsllama_small": {"score": False},
+        }
+        raw["n-samples"] = {
+            task_name: {"original": 10, "effective": 10}
+            for task_name in raw["results"]
+        }
+        raw["task_hashes"] = {}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results_path = root / "results_judges.json"
+            results_path.write_text(json.dumps(raw), encoding="utf-8")
+            manifest = export_results(
+                results_path,
+                root / "export",
+                retrieved_timestamp="1770000000.0",
+            )
+            records = [
+                json.loads((root / "export" / item["eee_record"]).read_text())
+                for item in manifest["records"]
+            ]
+            by_name = {
+                result["evaluation_name"]: result
+                for record in records
+                for result in record["evaluation_results"]
+                if result["metric_config"]["metric_id"]
+                not in {
+                    "alpaca_eval_v2.avg_word_count",
+                    "arena_hard_v01.avg_word_count",
+                    "arena_hard_v2.avg_word_count",
+                }
+            }
+            all_results = [
+                result
+                for record in records
+                for result in record["evaluation_results"]
+            ]
+
+            self.assertIn(
+                "polyglotoxicityprompts.polyglotoxicityprompts.small_overall",
+                by_name,
+            )
+            self.assertIn(
+                "polyglotoxicityprompts.polyglotoxicityprompts.small_english",
+                by_name,
+            )
+            self.assertIn(
+                "realtoxicityprompts.realtoxicityprompts.small", by_name
+            )
+            toxicity = by_name[
+                "polyglotoxicityprompts.polyglotoxicityprompts.small_english"
+            ]["metric_config"]["llm_scoring"]
+            self.assertEqual(
+                toxicity["judges"][0]["model_info"]["id"],
+                "meta-llama/Llama-Guard-4-12B",
+            )
+            self.assertEqual(toxicity["judges"][0]["temperature"], 0.0)
+
+            alpaca = by_name["alpaca_eval.alpaca_eval_v2.overall"][
+                "metric_config"
+            ]["llm_scoring"]
+            self.assertEqual(
+                alpaca["additional_details"]["baseline_model"],
+                "openai/gpt-4-1106-preview",
+            )
+            arena_v2 = by_name["arena_hard.arena_hard_v2.overall"][
+                "metric_config"
+            ]["llm_scoring"]
+            self.assertEqual(
+                arena_v2["additional_details"],
+                {
+                    "baseline_model": "openai/o3-mini-2025-01-31",
+                    "style_control": "false",
+                },
+            )
+            harmbench = by_name["harmbench.harmbench.overall"]["metric_config"]
+            self.assertEqual(
+                harmbench["llm_scoring"]["judges"][0]["model_info"]["id"],
+                "cais/HarmBench-Llama-2-13b-cls",
+            )
+
+            no_judge_metric_ids = {
+                result["metric_config"]["metric_id"]
+                for result in all_results
+                if "llm_scoring" not in result["metric_config"]
+            }
+            self.assertIn("orbench.refusal", no_judge_metric_ids)
+            self.assertIn("alpaca_eval_v2.avg_word_count", no_judge_metric_ids)
+            self.assertIn("arena_hard_v01.avg_word_count", no_judge_metric_ids)
+            self.assertIn("arena_hard_v2.avg_word_count", no_judge_metric_ids)
+            self.assertIn(
+                "polyglotoxicitypromptsllama_small",
+                {item["benchmark"] for item in manifest["records"]},
+            )
+            self.assertIn(
+                "realtoxicitypromptsllama_small",
+                {item["benchmark"] for item in manifest["records"]},
+            )
+
     def test_strict_mapping_rejects_unmapped_tasks(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

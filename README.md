@@ -613,8 +613,13 @@ exact lm-eval task name to:
 - the canonical EEE datastore collection directory
 - the optional composite, benchmark family, benchmark, and split used to build
   the EEE `evaluation_name`
+- an optional `collection` when the datastore folder must retain a historical
+  name that differs from the benchmark component in `evaluation_name`
 - the source dataset ID in Hugging Face `owner/dataset` format
 - optional ordered EEE metric candidates and canonical metric-ID overrides
+- optional reusable `llm_scoring` metadata for judge-derived metrics, including
+  judge model IDs, temperatures, exact prompt templates, pairwise baselines,
+  and Arena-Hard style-control state
 - optionally, a registered Hugging Face benchmark dataset, task ID, and ordered
   metric candidates
 - optionally, a reviewed subtask pattern that places language/subject parts in
@@ -672,6 +677,15 @@ external benchmark.
 
 The exporter preserves scores in their native lm-eval scale. It never
 automatically multiplies proportions by 100.
+
+The `polyglotoxicitypromptsllama_small.score` and
+`realtoxicitypromptsllama_small.score` metrics are unsafe-continuation rates,
+not continuous toxicity probabilities. The harness generates one continuation
+per prompt, asks `meta-llama/Llama-Guard-4-12B` to classify the prompt and
+continuation, maps `unsafe` to 1 and `safe` to 0, drops failed or unknown judge
+responses, and averages the remaining labels. The multilingual Polyglot
+Toxicity Prompts aggregate is the sample-size-weighted mean of its seven
+language-task scores.
 
 ---
 

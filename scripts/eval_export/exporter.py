@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import datetime as dt
 import hashlib
 import json
@@ -230,6 +231,20 @@ def _load_mapping(path: Path) -> dict[str, Any]:
     mapping = _read_json(path)
     if mapping.get("mapping_version") != 2:
         raise ExportError(f"Unsupported mapping_version in {path}")
+    llm_scoring_configs = mapping.get("llm_scoring_configs", {})
+    if not isinstance(llm_scoring_configs, dict):
+        raise ExportError(f"llm_scoring_configs must be an object in {path}")
+    for config_name, config in llm_scoring_configs.items():
+        if (
+            not isinstance(config, dict)
+            or not isinstance(config.get("judges"), list)
+            or not config["judges"]
+            or not isinstance(config.get("input_prompt"), str)
+            or not config["input_prompt"]
+        ):
+            raise ExportError(
+                f"Invalid llm_scoring_configs entry {config_name!r} in {path}"
+            )
     tasks = mapping.get("tasks")
     if not isinstance(tasks, dict) or not tasks:
         raise ExportError(f"Mapping file has no tasks: {path}")
@@ -237,6 +252,13 @@ def _load_mapping(path: Path) -> dict[str, Any]:
         eee = task_mapping.get("eee", {})
         if not eee.get("benchmark"):
             raise ExportError(f"Incomplete EEE mapping for {task_name}")
+        collection = eee.get("collection")
+        if collection is not None and (
+            not isinstance(collection, str)
+            or not collection
+            or collection != Path(collection).name
+        ):
+            raise ExportError(f"Invalid EEE collection for {task_name}: {collection!r}")
         try:
             _evaluation_name(eee)
         except ExportError as exc:
@@ -255,6 +277,24 @@ def _load_mapping(path: Path) -> dict[str, Any]:
                 raise ExportError(
                     f"Invalid subtask pattern for {task_name}: {exc}"
                 ) from exc
+        overrides = eee.get("metric_overrides", {})
+        if not isinstance(overrides, dict):
+            raise ExportError(f"Invalid metric_overrides for {task_name}")
+        for metric_name, override in overrides.items():
+            if not isinstance(override, dict):
+                raise ExportError(
+                    f"Invalid metric override for {task_name}/{metric_name}"
+                )
+            llm_scoring_ref = override.pop("llm_scoring_ref", None)
+            if llm_scoring_ref is None:
+                continue
+            llm_scoring = llm_scoring_configs.get(llm_scoring_ref)
+            if not isinstance(llm_scoring, dict):
+                raise ExportError(
+                    f"Unknown llm_scoring_ref {llm_scoring_ref!r} for "
+                    f"{task_name}/{metric_name}"
+                )
+            override["llm_scoring"] = copy.deepcopy(llm_scoring)
     return mapping
 
 
@@ -1228,7 +1268,11 @@ def export_results(
                 available_metrics,
                 list(candidates),
             )
-        grouped[task_mapping["eee"]["benchmark"]].append((task_name, task_mapping))
+        collection = (
+            task_mapping["eee"].get("collection")
+            or task_mapping["eee"]["benchmark"]
+        )
+        grouped[str(collection)].append((task_name, task_mapping))
 
     if not numeric_tasks:
         raise ExportError(
@@ -1582,7 +1626,10 @@ def check_remote_mappings(mapping_file: Path = DEFAULT_MAPPING_FILE) -> list[str
         for entry in entries
         if entry.get("type") == "directory"
     }
-    configured = {task["eee"]["benchmark"] for task in mapping["tasks"].values()}
+    configured = {
+        task["eee"].get("collection") or task["eee"]["benchmark"]
+        for task in mapping["tasks"].values()
+    }
     errors = [
         f"EEE collection is not present at data/{name}"
         for name in sorted(configured - available)
