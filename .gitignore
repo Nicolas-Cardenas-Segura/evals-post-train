@@ -19,6 +19,7 @@ core*
 
 lm_eval_reference
 Megatron-LM/
+swiss-ai-Megatron-LM/
 
 .DS_Store
 
