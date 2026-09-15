@@ -16,6 +16,18 @@ _eval_container_for_backend() {
     esac
 }
 
+_eval_prestart_dependency() {
+    # Jobs the first eval wave must wait on: an optional Megatron->HF conversion
+    # (--convert-to-hf) and the environment-preparation job. Both are one-time
+    # setup, so only the attempt==0 / fail-fast submissions need this.
+    local -a jobs=()
+    [[ -n "${EVAL_CONVERT_JOB_ID:-}" ]] && jobs+=("$EVAL_CONVERT_JOB_ID")
+    [[ -n "${EVAL_PREP_JOB_ID:-}" ]] && jobs+=("$EVAL_PREP_JOB_ID")
+    (( ${#jobs[@]} > 0 )) || return 0
+    local IFS=:
+    echo "afterok:${jobs[*]}"
+}
+
 _eval_submit_aggregator() {
     local model="$1" name="$2" eval_dirs_file="$3" incomplete_file="${4:-}"
     local -a command=(sbatch --parsable --export="ALL,EVAL_DIRS_FILE=$eval_dirs_file")
@@ -182,10 +194,12 @@ _eval_submit_wave() {
         --job-name="eval-${safe_name}"
         --export="ALL,EVAL_CHUNKS_FILE=$chunks_file,EVAL_ENV_MANIFEST=$EVAL_ENV_MANIFEST,EVAL_CHUNKED=true,WANDB_MODE=disabled"
         "$SBATCH_SCRIPT" "$model" "$name")
-    if (( attempt == 0 )) && [[ -n "${EVAL_PREP_JOB_ID:-}" ]]; then
+    local dependency
+    dependency=$(_eval_prestart_dependency)
+    if (( attempt == 0 )) && [[ -n "$dependency" ]]; then
         eval_command=(sbatch --parsable --array="$array_spec"
             --job-name="eval-${safe_name}"
-            --dependency="afterok:${EVAL_PREP_JOB_ID}"
+            --dependency="$dependency"
             --export="ALL,EVAL_CHUNKS_FILE=$chunks_file,EVAL_ENV_MANIFEST=$EVAL_ENV_MANIFEST,EVAL_CHUNKED=true,WANDB_MODE=disabled"
             "$SBATCH_SCRIPT" "$model" "$name")
     fi
@@ -298,7 +312,7 @@ submit_evaluation() {
             job_id="dry-evaluation"
         else
             job_id=$(sbatch --parsable --job-name="eval-${safe_name}" \
-                --dependency="afterok:${EVAL_PREP_JOB_ID}" \
+                --dependency="$(_eval_prestart_dependency)" \
                 --export="ALL,EVAL_ENV_MANIFEST=$EVAL_ENV_MANIFEST,EVAL_CHUNKED=false" \
                 "$SBATCH_SCRIPT" "$model" "$name")
         fi

@@ -38,6 +38,27 @@ bash scripts/launch_evaluations.sh default --model meta-llama/Llama-3.1-8B-Instr
 # Launch a Megatron checkpoint without conversion; --megatron-iter defaults to latest
 bash scripts/launch_evaluations.sh olmo-easy --model /capstor/store/../apertus-.../checkpoints/ --backend megatron_lm --name Megatron-Test-260216 --megatron-iter 4000000
 
+# Convert a Megatron checkpoint to HF first, then evaluate it with vLLM (recommended
+# over --backend megatron_lm above: supports vllm/sglang/hf and the thinking metrics).
+# --megatron-iter is required (no "latest" auto-resolution for conversion). The converted
+# checkpoint lands in /capstor/.../infra01/hf_models/models/swiss-ai/<name>-iter<N>/ by
+# default (override with --hf-output-dir); reconversion is skipped if it already exists.
+# Works for checkpoints trained with --ckpt-fully-parallel-save too (tools/checkpoint's
+# converter needs swiss-ai/Megatron-LM's fix/convert-fully-parallel-save-checkpoints
+# branch, or a merged equivalent, for those).
+bash scripts/launch_evaluations.sh single --task gsm8k \
+  --model /capstor/store/cscs/swissai/infra01/apertus_checkpoints/v1p5/megatron/8B/pretraining \
+  --backend vllm --convert-to-hf --megatron-iter 430000 --name Apertus-v1p5-8B-pretraining
+
+# Run just the conversion (no eval) to test it standalone, e.g. against a checkpoint's
+# iteration directory directly. CHECK_EQ_HF diffs the result against a known-good HF
+# checkpoint tensor-by-tensor if you have one to validate against; jobs need
+# --reservation (or SBATCH_RESERVATION=<name>) on Clariden's shared partition.
+SBATCH_RESERVATION=<reservation> CHECK_EQ_HF=/capstor/store/cscs/swissai/infra01/apertus_checkpoints/v1p5/hf/8B/pretraining/iter_0430000 \
+  sbatch scripts/convert_megatron_checkpoint.sbatch \
+  /capstor/store/cscs/swissai/infra01/apertus_checkpoints/v1p5/megatron/8B/pretraining/iter_0430000 \
+  /iopsstor/scratch/cscs/$USER/Apertus-v1p5-8B-pretraining-iter430000
+
 # Launch with vllm backend - recommended!
 bash scripts/launch_evaluations.sh olmo-easy --model /capstor/store/../apertus-.../checkpoints/ --backend vllm
 
