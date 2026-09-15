@@ -7,6 +7,27 @@ _eval_repo_root() {
     cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
+# scripts/eval_state.py uses `from __future__ import annotations` (PEP 563,
+# Python 3.7+) plus modern type-hint syntax throughout. This file's own
+# python3 calls below all run outside any container -- both from
+# launch_evaluations.sh on the login node, and from evaluation_controller.sbatch
+# on a bare compute node (its own #SBATCH directives have no
+# `srun --environment=...`) -- so they can't rely on one of the env_*.toml
+# containers' Python. Clariden's bare `python3` on both node types resolves
+# to the OS's system Python (confirmed 3.6.15, predating PEP 563 entirely:
+# "SyntaxError: future feature annotations is not defined"), so resolve a
+# real modern interpreter explicitly instead of trusting that alias.
+_eval_python() {
+    for cand in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3.7; do
+        if command -v "$cand" >/dev/null 2>&1; then
+            echo "$cand"
+            return
+        fi
+    done
+    echo "python3"
+}
+EVAL_PY=$(_eval_python)
+
 _eval_container_for_backend() {
     case "${LM_EVAL_BACKEND:-vllm}" in
         vllm|megatron_lm) echo "./containers/env_vllm.toml" ;;
@@ -87,7 +108,7 @@ _eval_create_run_config() {
 
     EVAL_RUN_CONFIG="$state_dir/run_config.json"
     export EVAL_RUN_CONFIG
-    EVAL_RUN_SIGNATURE=$(python3 -m scripts.eval_state config \
+    EVAL_RUN_SIGNATURE=$("$EVAL_PY" -m scripts.eval_state config \
         "${fields[@]}" --output "$EVAL_RUN_CONFIG")
     export EVAL_RUN_SIGNATURE
     echo "Run configuration: $EVAL_RUN_SIGNATURE"
@@ -112,7 +133,7 @@ _eval_launch_judge() {
     echo ""
     echo "--- Judge Model Launch ---"
     # JUDGE_EXTRA_ARGS retains the launcher's historical shell-word semantics.
-    if ! judge_stdout=$(python3 scripts/launch_judge.py \
+    if ! judge_stdout=$("$EVAL_PY" scripts/launch_judge.py \
         "${launch_args[@]}" ${JUDGE_EXTRA_ARGS:-}); then
         echo "ERROR: Judge model launch failed" >&2
         return 1
@@ -161,7 +182,7 @@ _eval_scan() {
         done < "$state_dir/force_patterns.txt"
         harness_args+=(--force-after "$(< "$state_dir/force_after.txt")")
     fi
-    python3 -m scripts.eval_state scan \
+    "$EVAL_PY" -m scripts.eval_state scan \
         --tasks-file "$state_dir/expected_tasks.txt" \
         "${harness_args[@]}" \
         --run-config "$state_dir/run_config.json" \
@@ -176,7 +197,7 @@ _eval_submit_wave() {
     local chunks_file="$state_dir/chunks_${attempt}.txt"
     local chunk_count array_spec array_job controller_job safe_name controller_name
 
-    python3 -m scripts.eval_state chunk --tasks-file "$missing_file" \
+    "$EVAL_PY" -m scripts.eval_state chunk --tasks-file "$missing_file" \
         --chunk-size "$chunk_size" --output "$chunks_file"
     chunk_count=$(wc -l < "$chunks_file" | tr -d ' ')
     (( chunk_count > 0 )) || { echo "No missing tasks to submit"; return 1; }
@@ -263,7 +284,7 @@ submit_evaluation() {
     if [[ -z "${LM_EVAL_RATE_LIMIT_STATE_DIR:-}" ]]; then
         export LM_EVAL_RATE_LIMIT_STATE_DIR="$state_dir/rate_limits"
     fi
-    python3 -m scripts.eval_state normalize --tasks "$TASKS" \
+    "$EVAL_PY" -m scripts.eval_state normalize --tasks "$TASKS" \
         --output "$state_dir/expected_tasks.txt"
 
     if grep -Eq '^(bfcl_v3|swiss_ai_charter_alignment)([/:_-]|$)' \
