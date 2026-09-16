@@ -52,9 +52,9 @@ TASK_TO_JUDGE = {
     "arena_hard_v2": "qwen3.5-27b",
     "harmbench": "cais-llama-harmbench",
     "realtoxicitypromptsllama": "llama-guard",
+    "polyglotoxicitypromptsllama": "llama-guard",
     "realtoxicitypromptsllama_small": "llama-guard",
     "polyglotoxicitypromptsllama_small": "llama-guard",
-    "polyglotoxicitypromptsllama": "llama-guard",
 }
 
 # ── Judge presets ─────────────────────────────────────────────────────
@@ -109,11 +109,11 @@ JUDGE_PRESETS = {
         ),
     },
     "llama-guard": {
-        "served_model_name": "cais/Llama-Guard-13b",
+        "served_model_name": "meta-llama/Llama-Guard-4-12B",
         "framework": "vllm",
         "nodes": 1,
         "time": "04:00:00",
-        "acount": "infra01",
+        "account": "infra01",
         "partition": "normal",
         "framework_args": (
             f"--model {MODEL_REGISTRY / 'meta-llama/Llama-Guard-4-12B'} "
