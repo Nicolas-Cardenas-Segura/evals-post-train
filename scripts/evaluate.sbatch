@@ -41,16 +41,10 @@ usage() {
 	echo " LOGS_ROOT: Where are your evaluation wandb&harness logs going to."
 	echo " TASKS: Tasks to run with lm eval harness."
 	echo " WANDB_ENTITY: WandB entity name for uploading results (default: apertus)."
-<<<<<<< HEAD
-	echo " WANDB_PROJECT: WandB project name for uploading results (default: swissai-evals)."
-	echo " LM_EVAL_BACKEND: Backend to use for lm-eval (default: hf). - options are: hf, vllm, sglang, megatron_lm, openai"
-    echo " CKPT_ITER: Megatron checkpoint iteration (integer). Required when LM_EVAL_BACKEND=megatron_lm."
-=======
 	echo " WANDB_PROJECT: WandB project name for uploading results (default: swissai-evals-test)."
 	echo " LM_EVAL_BACKEND: Backend to use for lm-eval (default: vllm). - options are: hf, vllm, sglang, megatron_lm, openai"
     echo " CKPT_ITER: Megatron checkpoint iteration (integer). Required when LM_EVAL_BACKEND=megatron_lm. CKPT_ITERATION is accepted as an alias."
     echo " MEGATRON_EXTRA_ARGS: Extra MCore CLI args for the megatron_lm backend, e.g. '--distributed-timeout-minutes 120' for long generation phases."
->>>>>>> b4130e9e917ca2521b3fae812e1974ceb22a8741
     echo " OpenAI-compatible API backend (LM_EVAL_BACKEND=openai; no model is loaded in the job):"
     echo " API_BASE_URL: Endpoint to evaluate against. Required. Accepts a bare host (http://host:8000), a /v1 root, or a full /v1/(chat/)completions URL."
     echo " API_CHAT_ENDPOINT: 'true' to use /v1/chat/completions (server-side chat template; generative tasks ONLY). Default: /v1/completions, which serves mixed suites."
@@ -230,16 +224,11 @@ warn_if_empty WANDB_API_KEY \
 warn_if_empty CSCS_SERVING_API \
   "Optional key missing. LLM-as-a-judge benchmarks via CSCS serving API will fail."
 
-<<<<<<< HEAD
-# optional eval arguments
-MAX_LENGTH=${MAX_LENGTH:-16384}
-=======
 # Optional eval arguments. An unset MAX_LENGTH leaves the backend/model default intact.
 MAX_LENGTH=${MAX_LENGTH:-""}
 if [[ -n "$MAX_LENGTH" && ! "$MAX_LENGTH" =~ ^[1-9][0-9]*$ ]]; then
     die "MAX_LENGTH must be a positive integer when set (got '$MAX_LENGTH')."
 fi
->>>>>>> b4130e9e917ca2521b3fae812e1974ceb22a8741
 # Capture explicitness before defaulting: thinking raises the default, but a caller value wins.
 if [[ -n "${MAX_NEW_TOKENS:+x}" ]]; then MAX_NEW_TOKENS_EXPLICIT=1; else MAX_NEW_TOKENS_EXPLICIT=0; fi
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS:-2048}
@@ -469,15 +458,9 @@ if [[ "$ENABLE_THINKING" == "True" ]]; then
 fi
 
 if [[ $LM_EVAL_BACKEND == "vllm" ]]; then
-<<<<<<< HEAD
-    COMMON_MODEL_ARGS="$COMMON_MODEL_ARGS,pretrained=$HF_CHECKPOINT_PATH,tokenizer=$TOKENIZER$MAYBE_REVISION,language_model_only=True,data_parallel_size=$DP,tensor_parallel_size=$MP,gpu_memory_utilization=$VLLM_MEMORY_FRACTION,enable_thinking=${ENABLE_THINKING}${THINK_ARGS}"
-elif [[ $LM_EVAL_BACKEND == "sglang" ]]; then
-    COMMON_MODEL_ARGS="$COMMON_MODEL_ARGS,pretrained=$HF_CHECKPOINT_PATH,tokenizer_path=$TOKENIZER$MAYBE_REVISION,dp_size=$DP,tp_size=$MP,mem_fraction_static=$VLLM_MEMORY_FRACTION,dtype=auto"
-=======
     COMMON_MODEL_ARGS="$COMMON_MODEL_ARGS,pretrained=$HF_CHECKPOINT_PATH,tokenizer=$TOKENIZER$MAYBE_REVISION,language_model_only=True,data_parallel_size=$DP,tensor_parallel_size=$MP,gpu_memory_utilization=$VLLM_MEMORY_FRACTION,enable_thinking=${ENABLE_THINKING}${THINK_ARGS}${THINKING_DEFAULT_MODEL_ARG},disable_flashinfer_allreduce_fusion=True"
 elif [[ $LM_EVAL_BACKEND == "sglang" ]]; then
     COMMON_MODEL_ARGS="$COMMON_MODEL_ARGS,pretrained=$HF_CHECKPOINT_PATH,tokenizer_path=$TOKENIZER$MAYBE_REVISION,dp_size=$DP,tp_size=$MP,mem_fraction_static=$VLLM_MEMORY_FRACTION,dtype=auto${THINKING_DEFAULT_MODEL_ARG}"
->>>>>>> b4130e9e917ca2521b3fae812e1974ceb22a8741
 elif [[ $LM_EVAL_BACKEND == "megatron_lm" ]]; then
     MEGATRON_MICRO_BATCH_SIZE=${MEGATRON_MICRO_BATCH_SIZE:-""}
     if [[ -z "$MEGATRON_MICRO_BATCH_SIZE" ]]; then
@@ -725,21 +708,12 @@ export PYTHONPATH=\$EVAL_RUNTIME_HARNESS_OVERLAY\${PYTHONPATH:+:\$PYTHONPATH}
 echo Evaluation environment activated: \$(date -Is) deep_import_check=$EVAL_VERIFY_ENV_IMPORTS harness_path=\$EVAL_RUNTIME_HARNESS_OVERLAY
 "
 if [[ $LM_EVAL_BACKEND == "megatron_lm" ]]; then
-<<<<<<< HEAD
-  INSTALL_CMD="$INSTALL_CMD && pip install megatron-core --no-deps && export MEGATRON_PATH=$(pwd)/Megatron-LM"
-fi
-
-# lm-eval's API models (local-completions / local-chat-completions) need the [api] extras.
-if [[ $LM_EVAL_BACKEND == "openai" ]]; then
-  INSTALL_CMD="$INSTALL_CMD && pip install --no-cache-dir tenacity aiohttp"
-=======
     # Fail loudly: without the checkout the job would die mid-run with a bare
     # ModuleNotFoundError after the model-load wait.
     [[ -d "$PWD/Megatron-LM" ]] || die "LM_EVAL_BACKEND=megatron_lm requires a Megatron-LM checkout or symlink at $PWD/Megatron-LM (e.g. ln -s \$SCRATCH/Megatron-LM $PWD/Megatron-LM)."
     LOAD_ENV_CMD="$LOAD_ENV_CMD
 export MEGATRON_PATH='$PWD/Megatron-LM'
 "
->>>>>>> b4130e9e917ca2521b3fae812e1974ceb22a8741
 fi
 
 # $CMD is re-parsed by the inner `bash -lc`, so --model_args is single-quoted (a token like
