@@ -345,8 +345,11 @@ if [ -z ${TOKENIZER+x} ]; then
     # CSCS-Inference/swiss-ai/Apertus-v1.5-70B) -- not a valid Hugging Face
     # repo id (org/repo, exactly one slash), so AutoTokenizer rejects them.
     # Strip the catalog prefix to recover the real tokenizer repo; a plain
-    # org/repo model id (one slash) is left untouched.
-    if [ "$(grep -o '/' <<< "$MODEL" | wc -l)" -gt 1 ]; then
+    # org/repo model id (one slash) is left untouched. Local filesystem paths
+    # (always absolute here) also have multiple slashes but aren't catalog ids --
+    # stripping up to the first one would mangle them (dropping the leading "/"),
+    # so leave those alone regardless of slash count.
+    if [[ "$MODEL" != /* ]] && [ "$(grep -o '/' <<< "$MODEL" | wc -l)" -gt 1 ]; then
         TOKENIZER="${MODEL#*/}"
         echo "TOKENIZER not set, using TOKENIZER=$TOKENIZER (catalog prefix stripped from MODEL=$MODEL)"
     else
