@@ -288,7 +288,6 @@ submit_evaluation() {
         --output "$state_dir/expected_tasks.txt"
 
     repo="swiss-ai/lm-evaluation-harness"
-    fi
     _eval_create_run_config "$model" "$repo" "$state_dir"
 
     if [[ -n "${EVAL_FORCE_TASKS:-}" ]]; then
