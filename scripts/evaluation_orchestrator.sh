@@ -15,18 +15,26 @@ _eval_repo_root() {
 # `srun --environment=...`) -- so they can't rely on one of the env_*.toml
 # containers' Python. Clariden's bare `python3` on both node types resolves
 # to the OS's system Python (confirmed 3.6.15, predating PEP 563 entirely:
-# "SyntaxError: future feature annotations is not defined"), so resolve a
-# real modern interpreter explicitly instead of trusting that alias.
-_eval_python() {
+# "SyntaxError: future feature annotations is not defined").
+#
+# Fixed once, for this script's whole execution, rather than at each call
+# site: symlink the newest real python3.x actually installed (confirmed
+# python3.11 at /usr/bin on both Clariden login and compute nodes) as
+# `python3` in a directory prepended to PATH, so every bare `python3` call
+# below -- and anything this script goes on to source or exec -- picks it up
+# automatically. A no-op (falls back to whatever `python3` already is) if
+# none of these versioned binaries exist, e.g. on a plain dev machine.
+_eval_prepend_modern_python_path() {
+    local cand real dir
     for cand in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3.7; do
-        if command -v "$cand" >/dev/null 2>&1; then
-            echo "$cand"
-            return
-        fi
+        real=$(command -v "$cand" 2>/dev/null) || continue
+        dir=$(mktemp -d "${TMPDIR:-/tmp}/eval-py-shim.XXXXXX") || return
+        ln -sf "$real" "$dir/python3"
+        export PATH="$dir:$PATH"
+        return
     done
-    echo "python3"
 }
-EVAL_PY=$(_eval_python)
+_eval_prepend_modern_python_path
 
 _eval_container_for_backend() {
     case "${LM_EVAL_BACKEND:-vllm}" in
@@ -108,7 +116,7 @@ _eval_create_run_config() {
 
     EVAL_RUN_CONFIG="$state_dir/run_config.json"
     export EVAL_RUN_CONFIG
-    EVAL_RUN_SIGNATURE=$("$EVAL_PY" -m scripts.eval_state config \
+    EVAL_RUN_SIGNATURE=$(python3 -m scripts.eval_state config \
         "${fields[@]}" --output "$EVAL_RUN_CONFIG")
     export EVAL_RUN_SIGNATURE
     echo "Run configuration: $EVAL_RUN_SIGNATURE"
@@ -133,7 +141,7 @@ _eval_launch_judge() {
     echo ""
     echo "--- Judge Model Launch ---"
     # JUDGE_EXTRA_ARGS retains the launcher's historical shell-word semantics.
-    if ! judge_stdout=$("$EVAL_PY" scripts/launch_judge.py \
+    if ! judge_stdout=$(python3 scripts/launch_judge.py \
         "${launch_args[@]}" ${JUDGE_EXTRA_ARGS:-}); then
         echo "ERROR: Judge model launch failed" >&2
         return 1
@@ -182,7 +190,7 @@ _eval_scan() {
         done < "$state_dir/force_patterns.txt"
         harness_args+=(--force-after "$(< "$state_dir/force_after.txt")")
     fi
-    "$EVAL_PY" -m scripts.eval_state scan \
+    python3 -m scripts.eval_state scan \
         --tasks-file "$state_dir/expected_tasks.txt" \
         "${harness_args[@]}" \
         --run-config "$state_dir/run_config.json" \
@@ -197,7 +205,7 @@ _eval_submit_wave() {
     local chunks_file="$state_dir/chunks_${attempt}.txt"
     local chunk_count array_spec array_job controller_job safe_name controller_name
 
-    "$EVAL_PY" -m scripts.eval_state chunk --tasks-file "$missing_file" \
+    python3 -m scripts.eval_state chunk --tasks-file "$missing_file" \
         --chunk-size "$chunk_size" --output "$chunks_file"
     chunk_count=$(wc -l < "$chunks_file" | tr -d ' ')
     (( chunk_count > 0 )) || { echo "No missing tasks to submit"; return 1; }
@@ -284,7 +292,7 @@ submit_evaluation() {
     if [[ -z "${LM_EVAL_RATE_LIMIT_STATE_DIR:-}" ]]; then
         export LM_EVAL_RATE_LIMIT_STATE_DIR="$state_dir/rate_limits"
     fi
-    "$EVAL_PY" -m scripts.eval_state normalize --tasks "$TASKS" \
+    python3 -m scripts.eval_state normalize --tasks "$TASKS" \
         --output "$state_dir/expected_tasks.txt"
 
     if grep -Eq '^(bfcl_v3|swiss_ai_charter_alignment)([/:_-]|$)' \
