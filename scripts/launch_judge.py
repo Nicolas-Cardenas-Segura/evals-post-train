@@ -32,14 +32,7 @@ import urllib.request
 from importlib.resources import files
 from pathlib import Path
 
-from swiss_ai_model_launch.launchers.launch_args import LaunchArgs as BaseLaunchArgs
-from swiss_ai_model_launch.launchers.launcher import JobStatus
-from swiss_ai_model_launch.launchers.slurm_launcher import SlurmLauncher
-
-# overwrite LaunchArgs to include nodes and worker_port
-class LaunchArgs(BaseLaunchArgs):
-    nodes: int = 1
-    worker_port: int = 8080
+from swiss_ai_model_launch import JobStatus, LaunchArgs, SlurmLauncher, Topology
 
 # ── Task-to-judge mapping ────────────────────────────────────────────
 
@@ -69,10 +62,9 @@ JUDGE_PRESETS = {
         "account": "infra01",
         "time": "04:00:00",
         "partition": "normal",
-        "worker_port": 8080,
         "framework_args": (
-            "--model Qwen/Qwen3.5-27B "
-            "--host 0.0.0.0 --port 8080 "
+            f"--model {MODEL_REGISTRY / 'Qwen/Qwen3.5-27B'} "
+            "--host 0.0.0.0 "
             "--served-model-name Qwen/Qwen3.5-27B "
             "--tensor-parallel-size 4 --max-model-len 26000 "
         ),
@@ -83,10 +75,9 @@ JUDGE_PRESETS = {
         "nodes": 1,
         "time": "04:00:00",
         "account": "infra01",
-        "worker_port": 8080,
         "framework_args": (
-            "--model meta-llama/Llama-3.3-70B-Instruct "
-            "--host 0.0.0.0 --port 8080 "
+            f"--model {MODEL_REGISTRY / 'meta-llama/Llama-3.3-70B-Instruct'} "
+            "--host 0.0.0.0 "
             "--served-model-name meta-llama/Llama-3.3-70B-Instruct "
             "--tensor-parallel-size 4 --max-model-len 35000"
         ),
@@ -98,10 +89,9 @@ JUDGE_PRESETS = {
         "time": "04:00:00",
         "account": "infra01",
         "partition": "normal",
-        "worker_port": 8080,
         "framework_args": (
-            "--model /capstor/store/cscs/swissai/infra01/hf_models/models/cais/HarmBench-Llama-2-13b-cls "
-            "--host 0.0.0.0 --port 8080 "
+            f"--model {MODEL_REGISTRY / 'cais/HarmBench-Llama-2-13b-cls'} "
+            "--host 0.0.0.0 "
             "--served-model-name cais/HarmBench-Llama-2-13b-cls "
             # This model's config.json caps max_position_embeddings at 2048 (unlike the
             # other judge presets); vLLM refuses to start above that, so keep it in bounds.
