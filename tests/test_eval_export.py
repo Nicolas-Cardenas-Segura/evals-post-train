@@ -2,11 +2,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from scripts.eval_export.exporter import (
     ExportError,
     _evaluation_name,
     _internal_task_mapping,
+    _load_samples,
+    _sample_file,
     export_results,
     validate_export,
 )
@@ -108,6 +111,141 @@ def fixture_sample() -> dict:
 
 
 class EvalExportTests(unittest.TestCase):
+    def test_sample_file_does_not_match_aggregate_to_subtask(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results = root / "results_2026-01-21T03-44-18.json"
+            subtask = root / "samples_group_leaf_2026-01-21T03-44-18.jsonl"
+            subtask.write_text("{}\n", encoding="utf-8")
+            self.assertIsNone(_sample_file(results, "group"))
+            exact = root / "samples_group_2026-01-21T03-44-18.jsonl"
+            exact.write_text("{}\n", encoding="utf-8")
+            self.assertEqual(_sample_file(results, "group"), exact)
+
+    def test_capped_samples_are_deterministic_and_do_not_invent_scores(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "samples.jsonl"
+            samples = []
+            for doc_id in range(30):
+                sample = fixture_sample()
+                sample["doc_id"] = doc_id
+                sample["exact_match"] = float(doc_id % 2)
+                if doc_id == 5:
+                    sample["arguments"]["gen_args_0"]["arg_0"] = "Line\u0085break"
+                samples.append(sample)
+            unscored = fixture_sample()
+            unscored["doc_id"] = 99
+            unscored["exact_match"] = {"deferred_judge": True}
+            samples.append(unscored)
+            path.write_text(
+                "".join(json.dumps(sample) + "\n" for sample in samples),
+                encoding="utf-8",
+            )
+            args = (
+                path,
+                "benchmark/swiss-ai/Model/123",
+                "swiss-ai/Model",
+                "benchmark.benchmark.overall",
+                ["exact_match,strict-match"],
+                5,
+            )
+            first, source, scorable = _load_samples(*args)
+            second, _, _ = _load_samples(*args)
+            self.assertEqual(first, second)
+            self.assertEqual((source, scorable, len(first)), (31, 30, 5))
+            self.assertNotIn("99", {row["sample_id"] for row in first})
+
+    def test_collection_export_caps_each_task_and_preserves_aggregates(self):
+        raw = fixture_results()
+        raw["results"] = {
+            "gsm8k_cot": raw["results"]["gsm8k_cot"],
+            "unmapped_benchmark": raw["results"]["unmapped_benchmark"],
+        }
+        raw["configs"] = {key: raw["configs"][key] for key in raw["results"]}
+        raw["higher_is_better"] = {
+            key: raw["higher_is_better"][key] for key in raw["results"]
+        }
+        raw["n-samples"] = {
+            key: raw["n-samples"][key] for key in raw["results"]
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            results = root / "results_2026-01-21T03-44-18.json"
+            results.write_text(json.dumps(raw), encoding="utf-8")
+            sample_path = root / "samples_gsm8k_cot_2026-01-21T03-44-18.jsonl"
+            sample_path.write_text(
+                "".join(
+                    json.dumps(
+                        {
+                            **fixture_sample(),
+                            "doc_id": doc_id,
+                            "arguments": {
+                                "gen_args_0": {"arg_0": "What is 2 + 2?\u0085"}
+                            },
+                        }
+                    )
+                    + "\n"
+                    for doc_id in range(25)
+                ),
+                encoding="utf-8",
+            )
+            output = root / "export"
+            manifest = export_results(
+                results,
+                output,
+                include_samples=True,
+                max_samples_per_task=4,
+                datastore_collection="swissai_apertus_evals",
+                retrieved_timestamp="1770000000.0",
+            )
+            self.assertEqual(manifest["max_samples_per_task"], 4)
+            self.assertEqual(manifest["capped_sample_tasks"], ["gsm8k_cot"])
+            self.assertEqual(validate_export(output), [])
+            gsm_item = next(
+                item for item in manifest["records"] if item["benchmark"] == "gsm8k"
+            )
+            self.assertTrue(
+                gsm_item["eee_record"].startswith(
+                    "eee/data/swissai_apertus_evals/swiss-ai/Test-Model/"
+                )
+            )
+            self.assertEqual(
+                len((output / gsm_item["instance_results"]).read_text().splitlines()),
+                4,
+            )
+            self.assertNotIn(
+                "\u0085",
+                (output / gsm_item["instance_results"]).read_text(),
+            )
+            self.assertIn(
+                "\\u0085",
+                (output / gsm_item["instance_results"]).read_text(),
+            )
+            record = json.loads((output / gsm_item["eee_record"]).read_text())
+            details = record["eval_library"]["additional_details"]
+            self.assertEqual(details["instance_sample_source_rows"], "25")
+            self.assertEqual(details["instance_samples_exported"], "4")
+            self.assertEqual(
+                record["evaluation_results"][0]["score_details"]["score"],
+                0.75,
+            )
+            with patch("time.time", return_value=1770000000.0):
+                again = export_results(
+                    results,
+                    root / "again",
+                    include_samples=True,
+                    max_samples_per_task=4,
+                    datastore_collection="swissai_apertus_evals",
+                    retrieved_timestamp="1770000000.0",
+                )
+            again_item = next(
+                item for item in again["records"] if item["benchmark"] == "gsm8k"
+            )
+            self.assertEqual(
+                (output / gsm_item["instance_results"]).read_bytes(),
+                (root / "again" / again_item["instance_results"]).read_bytes(),
+            )
+
     def test_evaluation_name_scheme_handles_optional_composite_and_defaults(self):
         self.assertEqual(
             _evaluation_name({"benchmark": "MATH"}),

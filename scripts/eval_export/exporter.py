@@ -11,6 +11,7 @@ import ast
 import copy
 import datetime as dt
 import hashlib
+import heapq
 import json
 import math
 import re
@@ -934,13 +935,22 @@ def _extract_output(sample: dict[str, Any], choices: list[str] | None) -> str:
     return str(first)
 
 
-def _sample_score(sample: dict[str, Any]) -> tuple[float, bool]:
-    for metric in sample.get("metrics", []):
-        value = sample.get(metric)
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+def _sample_score(
+    sample: dict[str, Any], result_keys: Iterable[str]
+) -> tuple[float, bool] | None:
+    """Return the first exported metric with a scalar score for this filter."""
+    sample_filter = str(sample.get("filter", "none"))
+    for result_key in result_keys:
+        metric_name, separator, result_filter = result_key.partition(",")
+        if separator and result_filter != sample_filter:
+            continue
+        value = sample.get(metric_name)
+        if isinstance(value, bool):
+            return float(value), value
+        if isinstance(value, (int, float)) and math.isfinite(value):
             score = float(value)
             return score, score == 1.0
-    return 0.0, False
+    return None
 
 
 def _convert_sample(
@@ -948,12 +958,16 @@ def _convert_sample(
     evaluation_id: str,
     model_id: str,
     canonical_name: str,
-) -> dict[str, Any]:
+    result_keys: Iterable[str],
+) -> dict[str, Any] | None:
+    sample_score = _sample_score(sample, result_keys)
+    if sample_score is None:
+        return None
     prompt = _extract_prompt(sample)
     target = str(sample.get("target", ""))
     choices = _extract_choices(sample)
     output = _extract_output(sample, choices)
-    score, is_correct = _sample_score(sample)
+    score, is_correct = sample_score
     filter_name = str(sample.get("filter", "none"))
     sample_hash = hashlib.sha256(
         json.dumps(
@@ -996,8 +1010,76 @@ def _convert_sample(
 
 
 def _sample_file(results_file: Path, task_name: str) -> Path | None:
-    matches = sorted(results_file.parent.glob(f"**/samples_{task_name}_*.jsonl"))
+    prefix = f"samples_{task_name}_"
+    matches = sorted(
+        path
+        for path in results_file.parent.glob(f"**/{prefix}*.jsonl")
+        if re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T.+",
+            path.name[len(prefix) : -len(".jsonl")],
+        )
+    )
     return matches[-1] if matches else None
+
+
+def _sample_priority(record: dict[str, Any]) -> int:
+    identity = {
+        "evaluation_name": record["evaluation_name"],
+        "sample_id": record["sample_id"],
+        "sample_hash": record["sample_hash"],
+        "filter": record["metadata"]["filter"],
+    }
+    digest = hashlib.sha256(
+        json.dumps(identity, sort_keys=True, ensure_ascii=False).encode()
+    ).digest()
+    return int.from_bytes(digest, byteorder="big")
+
+
+def _load_samples(
+    sample_path: Path,
+    evaluation_id: str,
+    model_id: str,
+    canonical_name: str,
+    result_keys: Iterable[str],
+    max_samples: int | None,
+) -> tuple[list[dict[str, Any]], int, int]:
+    """Load scorable samples, optionally retaining a deterministic hash sample."""
+    rows: list[dict[str, Any]] = []
+    heap: list[tuple[int, int, int, dict[str, Any]]] = []
+    source_rows = 0
+    scorable_rows = 0
+    metric_keys = tuple(result_keys)
+    with sample_path.open(encoding="utf-8") as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            source_rows += 1
+            try:
+                sample = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ExportError(f"{sample_path}:{line_number}: {exc}") from exc
+            converted = _convert_sample(
+                sample,
+                evaluation_id,
+                model_id,
+                canonical_name,
+                metric_keys,
+            )
+            if converted is None:
+                continue
+            scorable_rows += 1
+            if max_samples is None:
+                rows.append(converted)
+                continue
+            priority = _sample_priority(converted)
+            item = (-priority, -line_number, line_number, converted)
+            if len(heap) < max_samples:
+                heapq.heappush(heap, item)
+            elif item > heap[0]:
+                heapq.heapreplace(heap, item)
+    if max_samples is not None:
+        rows = [item[3] for item in sorted(heap, key=lambda item: item[2])]
+    return rows, source_rows, scorable_rows
 
 
 def _hf_metric(
@@ -1210,12 +1292,26 @@ def export_results(
     source_organization_url: str | None = "https://www.swiss-ai.org/",
     evaluator_relationship: str | None = None,
     include_samples: bool = False,
+    max_samples_per_task: int | None = None,
+    datastore_collection: str | None = None,
     strict_mappings: bool = False,
     exclude_tasks: Iterable[str] = (),
     aggregate_only_tasks: Iterable[str] = (),
     retrieved_timestamp: str | None = None,
 ) -> dict[str, Any]:
     """Export one completed lm-eval run and return its manifest."""
+    if max_samples_per_task is not None:
+        if max_samples_per_task < 1:
+            raise ExportError("max_samples_per_task must be a positive integer")
+        if not include_samples:
+            raise ExportError("max_samples_per_task requires include_samples=True")
+    if datastore_collection is not None and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]*", datastore_collection
+    ):
+        raise ExportError(
+            "datastore_collection must be one safe directory name containing only "
+            "letters, numbers, dots, underscores, or hyphens"
+        )
     results_file = _find_results_file(results_path)
     raw = _read_json(results_file)
     if not isinstance(raw.get("results"), dict):
@@ -1301,12 +1397,18 @@ def export_results(
         )
 
     records_manifest: list[dict[str, Any]] = []
+    capped_sample_tasks: list[str] = []
+    unscored_sample_tasks: list[str] = []
+    missing_sample_tasks: list[str] = []
     for benchmark, task_entries in sorted(grouped.items()):
         record_uuid = _stable_uuid(source_sha, benchmark, model_id)
         evaluation_id = f"{benchmark}/{model_id}/{retrieved}"
         record_results: list[dict[str, Any]] = []
         instance_rows: list[dict[str, Any]] = []
         hf_entries: list[dict[str, Any]] = []
+        record_source_sample_rows = 0
+        record_scorable_sample_rows = 0
+        record_capped_sample_tasks = 0
 
         for task_name, task_mapping in task_entries:
             task_results = raw["results"][task_name]
@@ -1334,26 +1436,27 @@ def export_results(
             if include_samples:
                 sample_path = _sample_file(results_file, task_name)
                 if sample_path is None:
-                    warnings.append(f"{task_name}: no sample JSONL file found")
+                    missing_sample_tasks.append(task_name)
                 else:
-                    with sample_path.open(encoding="utf-8") as handle:
-                        for line_number, line in enumerate(handle, start=1):
-                            if not line.strip():
-                                continue
-                            try:
-                                sample = json.loads(line)
-                            except json.JSONDecodeError as exc:
-                                raise ExportError(
-                                    f"{sample_path}:{line_number}: {exc}"
-                                ) from exc
-                            instance_rows.append(
-                                _convert_sample(
-                                    sample,
-                                    evaluation_id,
-                                    model_id,
-                                    _evaluation_name(task_mapping["eee"]),
-                                )
-                            )
+                    task_samples, source_rows, scorable_rows = _load_samples(
+                        sample_path,
+                        evaluation_id,
+                        model_id,
+                        _evaluation_name(task_mapping["eee"]),
+                        [key for key, _ in selected_metrics],
+                        max_samples_per_task,
+                    )
+                    instance_rows.extend(task_samples)
+                    record_source_sample_rows += source_rows
+                    record_scorable_sample_rows += scorable_rows
+                    if source_rows and not scorable_rows:
+                        unscored_sample_tasks.append(task_name)
+                    if (
+                        max_samples_per_task is not None
+                        and scorable_rows > max_samples_per_task
+                    ):
+                        capped_sample_tasks.append(task_name)
+                        record_capped_sample_tasks += 1
 
             hf = task_mapping.get("huggingface")
             if hf:
@@ -1387,6 +1490,24 @@ def export_results(
         library_details = {
             "git_hash": str(raw.get("git_hash") or "unknown"),
         }
+        if include_samples:
+            library_details["instance_sample_source_rows"] = str(
+                record_source_sample_rows
+            )
+            library_details["instance_sample_scorable_rows"] = str(
+                record_scorable_sample_rows
+            )
+            library_details["instance_samples_exported"] = str(len(instance_rows))
+            if max_samples_per_task is not None:
+                library_details["instance_sample_cap_per_task"] = str(
+                    max_samples_per_task
+                )
+                library_details["instance_sample_selection"] = (
+                    "deterministic lowest SHA-256 priorities per lm-eval task"
+                )
+                library_details["instance_sample_tasks_capped"] = str(
+                    record_capped_sample_tasks
+                )
         for key in (
             "batch_size",
             "device",
@@ -1476,7 +1597,11 @@ def export_results(
             record["model_info"]["additional_details"] = model_details
 
         record_dir = (
-            output_dir / "eee/data" / benchmark / developer / repo_model_name
+            output_dir
+            / "eee/data"
+            / (datastore_collection or benchmark)
+            / developer
+            / repo_model_name
         )
         record_path = record_dir / f"{record_uuid}.json"
         samples_path: Path | None = None
@@ -1485,7 +1610,7 @@ def export_results(
             samples_path.parent.mkdir(parents=True, exist_ok=True)
             with samples_path.open("w", encoding="utf-8") as handle:
                 for row in instance_rows:
-                    handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+                    handle.write(json.dumps(row, ensure_ascii=True) + "\n")
             record["detailed_evaluation_results"] = {
                 "format": "jsonl",
                 "file_path": str(samples_path.relative_to(output_dir / "eee")),
@@ -1526,6 +1651,18 @@ def export_results(
             }
         )
 
+    if missing_sample_tasks:
+        warnings.append(
+            f"{len(set(missing_sample_tasks))} task(s) had no exact sample JSONL: "
+            + _format_items(missing_sample_tasks)
+        )
+    if unscored_sample_tasks:
+        warnings.append(
+            f"{len(set(unscored_sample_tasks))} task(s) had no scalar per-sample "
+            "value for an exported metric and were omitted from instance data: "
+            + _format_items(unscored_sample_tasks)
+        )
+
     manifest = {
         "format_version": 1,
         "source_results": str(results_file),
@@ -1538,6 +1675,11 @@ def export_results(
         "mapping_version": mapping["mapping_version"],
         "eee_schema_version": mapping["eee_schema_version"],
         "records": records_manifest,
+        "datastore_collection": datastore_collection,
+        "max_samples_per_task": max_samples_per_task,
+        "capped_sample_tasks": sorted(set(capped_sample_tasks)),
+        "unscored_sample_tasks": sorted(set(unscored_sample_tasks)),
+        "missing_sample_tasks": sorted(set(missing_sample_tasks)),
         "internally_named_tasks": sorted(internally_named),
         "aggregate_only_tasks": sorted(aggregate_only),
         "excluded_tasks": sorted(excluded_tasks),
@@ -1695,6 +1837,22 @@ def _parser() -> argparse.ArgumentParser:
     )
     export.add_argument("--include-samples", action="store_true")
     export.add_argument(
+        "--max-samples-per-task",
+        type=int,
+        metavar="N",
+        help=(
+            "with --include-samples, retain at most N deterministic samples "
+            "per lm-eval task"
+        ),
+    )
+    export.add_argument(
+        "--datastore-collection",
+        help=(
+            "place every EEE record under one collection directory while "
+            "retaining benchmark identities inside each JSON record"
+        ),
+    )
+    export.add_argument(
         "--strict-mappings",
         action="store_true",
         help="fail instead of using internal names for unmapped lm-eval tasks",
@@ -1749,6 +1907,8 @@ def main(argv: list[str] | None = None) -> None:
                     else args.evaluator_relationship
                 ),
                 include_samples=args.include_samples,
+                max_samples_per_task=args.max_samples_per_task,
+                datastore_collection=args.datastore_collection,
                 strict_mappings=args.strict_mappings,
                 exclude_tasks=args.exclude_task,
                 aggregate_only_tasks=args.aggregate_only_task,

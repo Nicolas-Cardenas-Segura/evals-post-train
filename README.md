@@ -522,6 +522,30 @@ python scripts/export_eval_results.py export \
   --include-samples
 ```
 
+For a compact, reproducible datastore submission, use a per-task instance cap
+and one collection directory. This preserves every aggregate score and keeps
+up to 10 scorable examples from each lm-eval task, selected by a stable SHA-256
+priority rather than by file order. The cap does not rescore or recompute
+aggregates. Rows without a numeric per-sample value for an exported metric
+(such as deferred LLM-judge payloads) are omitted instead of being reported as
+zero. The manifest records capped, unscored, and missing-sample tasks; each
+record retains source, scorable, and exported instance-row counts.
+
+```bash
+python scripts/export_eval_results.py export RESULTS.json \
+  --output-dir eval-results/Apertus-release-capped \
+  --model-id swiss-ai/Apertus-v1.5-8B \
+  --include-samples \
+  --max-samples-per-task 10 \
+  --datastore-collection swissai_apertus_evals
+```
+
+The resulting EEE files can be copied directly from
+`eee/data/swissai_apertus_evals/<developer>/<model>/` into the same datastore
+path. Aggregate JSON filenames remain stable; only the record paths and the
+optional instance companions differ from a benchmark-folder export. Use a
+fresh output directory when changing sample-cap settings.
+
 `--model-id` is optional when the result log contains an `owner/model` ID, but
 it is required when the evaluation used a local checkpoint path.
 EEE `model_info.id` uses this Hub ID, and `model_info.additional_details`
