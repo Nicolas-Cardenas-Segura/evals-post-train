@@ -7,6 +7,35 @@ _eval_repo_root() {
     cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd
 }
 
+# scripts/eval_state.py uses `from __future__ import annotations` (PEP 563,
+# Python 3.7+) plus modern type-hint syntax throughout. This file's own
+# python3 calls below all run outside any container -- both from
+# launch_evaluations.sh on the login node, and from evaluation_controller.sbatch
+# on a bare compute node (its own #SBATCH directives have no
+# `srun --environment=...`) -- so they can't rely on one of the env_*.toml
+# containers' Python. Clariden's bare `python3` on both node types resolves
+# to the OS's system Python (confirmed 3.6.15, predating PEP 563 entirely:
+# "SyntaxError: future feature annotations is not defined").
+#
+# Fixed once, for this script's whole execution, rather than at each call
+# site: symlink the newest real python3.x actually installed (confirmed
+# python3.11 at /usr/bin on both Clariden login and compute nodes) as
+# `python3` in a directory prepended to PATH, so every bare `python3` call
+# below -- and anything this script goes on to source or exec -- picks it up
+# automatically. A no-op (falls back to whatever `python3` already is) if
+# none of these versioned binaries exist, e.g. on a plain dev machine.
+_eval_prepend_modern_python_path() {
+    local cand real dir
+    for cand in python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3.7; do
+        real=$(command -v "$cand" 2>/dev/null) || continue
+        dir=$(mktemp -d "${TMPDIR:-/tmp}/eval-py-shim.XXXXXX") || return
+        ln -sf "$real" "$dir/python3"
+        export PATH="$dir:$PATH"
+        return
+    done
+}
+_eval_prepend_modern_python_path
+
 _eval_container_for_backend() {
     case "${LM_EVAL_BACKEND:-vllm}" in
         vllm|megatron_lm) echo "./containers/env_vllm.toml" ;;
