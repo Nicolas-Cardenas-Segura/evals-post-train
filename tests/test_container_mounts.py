@@ -42,6 +42,21 @@ class ContainerMountTests(unittest.TestCase):
                         f"{filename} does not expose {required}",
                     )
 
+    def test_shared_evals_pipeline_artifacts_dir_is_visible(self):
+        # evals-svc points LOGS_ROOT/HF_HOME here; lm_eval writes its
+        # --output_path from inside these containers, so a path that is not
+        # mounted loses the results.
+        required = "/iopsstor/datacache/cscs/swissai/infra01/evals_pipeline_artifacts"
+        for filename in CONTAINER_CONFIGS:
+            with self.subTest(config=filename):
+                path = REPO_ROOT / "containers" / filename
+                with path.open("rb") as handle:
+                    mounts = tomllib.load(handle)["mounts"]
+                self.assertTrue(
+                    path_is_mounted(mounts, required),
+                    f"{filename} does not expose {required}",
+                )
+
     def test_harness_overlay_is_archived_and_staged_on_node_local_storage(self):
         build_script = (REPO_ROOT / "scripts" / "build_eval_env.sh").read_text(
             encoding="utf-8"

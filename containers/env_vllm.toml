@@ -5,6 +5,7 @@ mounts = [
     "/capstor/scratch/cscs/${USER}",
     "/iopsstor/scratch/cscs/${USER}",
     "/capstor/store/cscs/swissai/infra01",
+    "/iopsstor/datacache/cscs/swissai/infra01/evals_pipeline_artifacts",
 ]
 
 writable = true
