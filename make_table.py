@@ -79,9 +79,9 @@ def get_metric(summary, metric):
         if "stderr" in k:
             continue
         k_lower = k.lower()
-        task_lower = task.lower()
-        # Key must contain the task name
-        if task_lower not in k_lower:
+        # The task name must match exactly; substring matching would borrow
+        # scores from a different task (e.g. "humaneval" -> "humaneval_instruct").
+        if k.split("/", 1)[0].lower() != task.lower():
             continue
         # If we have a metric_name, key must contain it
         if metric_name and metric_name.lower() not in k_lower:
