@@ -5,7 +5,6 @@ import argparse
 import wandb
 import pandas as pd
 import numpy as np
-import matplotlib.pyplot as plt
 import re
 
 BASE_MODEL_NAME = "baseline-apertus-1-sft"
@@ -599,6 +598,11 @@ def main():
 
     os.makedirs(args.output, exist_ok=True)
 
+
+    # Lazy import: matplotlib is only needed for PNG rendering and is not a
+    # declared dependency, so importing it at module level would break use of
+    # get_metric etc. in environments without it (e.g. CI unit tests).
+    import matplotlib.pyplot as plt
 
     n_rows = len(df)
     n_cols = len(df.columns)
